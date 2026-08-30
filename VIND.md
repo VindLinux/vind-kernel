@@ -146,7 +146,7 @@ Copy it to your `/boot` directory with a descriptive filename:
 cp arch/x86/boot/bzImage /boot/vmlinuz-7.2.0-vind-intel-minimal
 ```
 
-(Substitute `vind-amd-minimal` when building the AMD configuration.)
+(Substitute `vind-intel-minimal` to the configuration you built.)
 
 ### Initramfs
 
@@ -157,6 +157,9 @@ Generate the initramfs with `dracut`:
 ```sh
 dracut --force /boot/initramfs-7.2.0-vind-intel-minimal.img 7.2.0-vind-intel-minimal
 ```
+
+(Same thing applies here. Substitute `vind-intel-minimal` to the configuration you built.)
+
 
 Then regenerate the GRUB configuration so the new kernel/initramfs pair is picked up:
 
