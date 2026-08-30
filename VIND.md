@@ -4,6 +4,11 @@ This repository contains the Linux kernel used by **Vind Linux**.
 
 Vind maintains a small set of kernel-specific changes on top of the upstream Linux kernel, keeping the upstream source as the base whenever possible.
 
+## Version
+
+- **Linux:** 7.2.0
+- **Architecture:** x86_64
+
 ## Configuration
 
 Vind provides a minimal x86_64 kernel configuration:
@@ -36,6 +41,34 @@ make menuconfig
 
 The minimal configuration should therefore be treated as a baseline rather than a universal hardware configuration.
 
+## Building
+
+A complete kernel building is made by running:
+
+```sh
+make vind_x86_64_minimal_defconfig
+make -j$(nproc)
+make modules_install
+```
+
+The first command generates the Vind minimal x86_64 configuration, the second builds the kernel, and the third installs the kernel modules into the target filesystem.
+
+Additional build and installation steps depend on the target Vind Linux system.
+
+## Installing the Kernel Image
+
+After a successful build, the kernel image is available at:
+
+```text
+arch/x86/boot/bzImage
+```
+
+Copy it to your /boot directory with a descriptive filename:
+
+```sh
+cp arch/x86/boot/bzImage /boot/vmlinuz-7.2.0-vind
+```
+
 ## Upstream
 
 Vind tracks the mainline Linux kernel from:
@@ -53,16 +86,6 @@ git fetch upstream
 ```
 
 Vind-specific changes are maintained on the `vind` branch.
-
-## Building
-
-After configuring the kernel:
-
-```sh
-make -j$(nproc)
-```
-
-Additional build and installation steps depend on the target Vind Linux system.
 
 ## Philosophy
 
