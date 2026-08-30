@@ -16,7 +16,7 @@ Vind provides minimal x86_64 kernel configurations, split by CPU vendor. See the
 Hardware-specific driver configuration beyond what each vendor baseline enables is the user's responsibility. Before building the kernel for a physical machine, review the hardware and enable any additional required drivers in `make menuconfig`, `make nconfig`, or another kernel configuration interface. Pay particular attention to:
 
 - Storage controllers (e.g. `SATA_AHCI`, `BLK_DEV_NVME`).
-- Wi-Fi support and device drivers (e.g. WLAN, CFG80211, MAC80211, and chipset drivers).
+- Wi-Fi support and device drivers (e.g. `WLAN`, `CFG80211`, `MAC80211`, and chipset drivers).
 - Input (`SERIO_I8042` + `KEYBOARD_ATKBD` for internal laptop keyboards, `USB_SUPPORT` + `HID_SUPPORT` + `USB_HID` for USB peripherals).
 - Graphics driver matching the actual GPU.
 
@@ -68,28 +68,54 @@ This keeps firmware shipped compressed (as intended) and survives future `linux-
 
 ## AMD
 
-- **Status:** planned, not yet available
-- **Config file (planned):** `arch/x86/configs/vind_x86_64_amd_minimal_defconfig`
-- **Generate with (planned):** `make vind_x86_64_amd_minimal_defconfig`
+- **Status:** available
+- **Config file:** `arch/x86/configs/vind_x86_64_amd_minimal_defconfig`
+- **Generate with:** `make vind_x86_64_amd_minimal_defconfig`
 
-There is currently no AMD-specific minimal configuration. Building for AMD hardware today means starting from the Intel config (or a generic `defconfig`) and manually adjusting vendor-specific options.
+### Coverage
 
-### Expected differences from the Intel configuration
+The AMD minimal configuration mirrors the Intel baseline where the hardware overlaps, with AMD-specific swaps:
 
-When the AMD defconfig lands, the following swaps are anticipated relative to the Intel baseline:
-
-- Graphics: `CONFIG_DRM_AMDGPU` instead of `CONFIG_DRM_I915`.
-- Networking: AMD boards vary more in onboard NIC vendor than Intel's; likely `CONFIG_R8169` (Realtek, very common on AMD boards) in addition to/instead of `E1000E`/`IGC`.
-- Power management: `CONFIG_X86_AMD_PSTATE` instead of `CONFIG_X86_INTEL_PSTATE`; no `INTEL_IDLE` equivalent needed (AMD uses ACPI-based idle by default).
-- I/O: `CONFIG_AMD_IOMMU` instead of `CONFIG_INTEL_IOMMU`. No `VMD` equivalent — AMD platforms don't hide NVMe controllers behind a bridging device the way some Intel laptops do.
-- CPU: `CONFIG_CPU_SUP_AMD` instead of `CONFIG_CPU_SUP_INTEL` (microcode loading itself is vendor-agnostic and enabled by default, same as Intel).
-- Crypto: no AES-NI-Intel-specific option; general `CONFIG_CRYPTO_AES` plus platform-detected acceleration applies instead.
+- Graphics: `CONFIG_DRM_AMDGPU` instead of `CONFIG_DRM_I915`, plus `DRM_EFIDRM`/`DRM_SIMPLEDRM` as early boot fallback.
+- Networking: `CONFIG_R8169` (Realtek, very common on AMD boards) alongside `CONFIG_E1000E`/`CONFIG_IGC` — many AMD boards (especially higher-end AM4/AM5) ship an Intel-vendor NIC despite the AMD CPU/chipset, so both are kept rather than assuming AMD implies Realtek. Wireless via `CONFIG_IWLWIFI`.
+- Power management: `CONFIG_X86_AMD_PSTATE` instead of `CONFIG_X86_INTEL_PSTATE`. No `INTEL_IDLE` equivalent is needed — AMD relies on ACPI-based idle by default.
+- I/O: `CONFIG_AMD_IOMMU` instead of `CONFIG_INTEL_IOMMU`. There is no `VMD` equivalent — AMD platforms don't hide NVMe controllers behind a bridging device the way some Intel laptops do, so `VMD` is intentionally absent here.
+- Platform: `CONFIG_I2C_PIIX4` instead of `CONFIG_I2C_I801` (the AMD SMBus controller is a different chip entirely, not just a renamed Intel one). `CONFIG_SENSORS_K10TEMP` for native CPU temperature reporting.
+- CPU: microcode loading (`CONFIG_MICROCODE=y`) is vendor-agnostic and covered by kernel defaults, same as Intel.
+- Crypto: `CONFIG_CRYPTO_AES_NI_INTEL` is kept despite the name — AES-NI is an x86 instruction set extension present on both Intel and AMD CPUs, and the driver works on either.
 
 ### Anticipated firmware caveat
 
-`amdgpu` also ships large firmware blobs under `/usr/lib/firmware/amdgpu/`, commonly `.zst`-compressed by `linux-firmware` for the same disk-space reasons as Intel's `i915` firmware. The same `dracut` `.zst` detection issue documented in the [Intel](#intel) section is expected to apply here too. When the AMD config is added, a matching `/etc/dracut.conf.d/amdgpu-firmware.conf` override (`install_items+=" /usr/lib/firmware/amdgpu/* "`) should be included pre-emptively rather than waiting for someone to hit it.
+`amdgpu` also ships large firmware blobs under `/usr/lib/firmware/amdgpu/`, commonly `.zst`-compressed by `linux-firmware` for the same disk-space reasons as Intel's `i915` firmware. The same `dracut` `.zst` detection issue documented in the [Intel](#intel) section is expected to apply here too, since it's a `dracut`/initramfs-generation issue rather than anything driver-specific. Until confirmed against real AMD graphics hardware, treat this pre-emptively: add a matching `/etc/dracut.conf.d/amdgpu-firmware.conf` override (`install_items+=" /usr/lib/firmware/amdgpu/* "`) rather than waiting to hit the same wedged-GPU symptom the Intel section describes.
 
-Contributions adding the AMD minimal defconfig are welcome — see the [Philosophy](#philosophy) section for the goals it should follow.
+---
+
+## VM
+
+- **Status:** available
+- **Config file:** `arch/x86/configs/vind_x86_64_vm_minimal_defconfig`
+- **Generate with:** `make vind_x86_64_vm_minimal_defconfig`
+
+### Coverage
+
+The VM minimal configuration is designed around QEMU/KVM-style guests, prioritizing paravirtualized devices while retaining a small set of emulated-hardware fallbacks:
+
+* **Virtualization:** `CONFIG_HYPERVISOR_GUEST`, `CONFIG_PARAVIRT`, `CONFIG_PARAVIRT_SPINLOCKS`, and `CONFIG_KVM_GUEST` enable the kernel's guest-specific optimizations when running under a hypervisor. These provide things such as paravirtualized spinlocks and optimized clock handling, reducing virtualization overhead instead of making the guest behave entirely like physical hardware.
+* **Boot:** `CONFIG_PVH` provides PVH boot support, used by some Xen and cloud environments where the guest is entered directly by the hypervisor rather than through a traditional BIOS/UEFI path. Its compatibility value is high relative to its cost, so it remains enabled as a safety net.
+* **VirtIO:** `CONFIG_VIRTIO_MENU`, `CONFIG_VIRTIO_PCI`, `CONFIG_VIRTIO_BLK`, `CONFIG_VIRTIO_NET`, `CONFIG_VIRTIO_BALLOON`, `CONFIG_VIRTIO_INPUT`, `CONFIG_VIRTIO_MMIO`, and `CONFIG_HW_RANDOM_VIRTIO` cover the main VirtIO device stack. VirtIO is the preferred paravirtualized interface for QEMU/KVM guests, providing efficient disk, networking, input, memory-ballooning, and host-provided entropy without relying on fully emulated hardware.
+* **Emulated storage/network:** `CONFIG_E1000` and `CONFIG_ATA_PIIX` provide compatibility with classic emulated QEMU hardware. They act as fallbacks for machine types or VM configurations that do not expose VirtIO devices, keeping basic networking and storage functional at the cost of higher emulation overhead.
+* **Graphics:** `CONFIG_DRM_VIRTIO_GPU` provides the paravirtualized GPU used by QEMU-based desktops, including setups using VirGL for accelerated rendering. `CONFIG_DRM_BOCHS` and `CONFIG_DRM_CIRRUS_QEMU` provide fallback support for traditional emulated VGA devices when VirtIO-GPU is unavailable.
+* **Host<->guest filesystem:** `CONFIG_NET_9P`, `CONFIG_NET_9P_VIRTIO`, and `CONFIG_9P_FS` enable 9P over VirtIO, allowing QEMU's `virtfs` mechanism to expose host directories directly inside the guest. This is useful for shared folders without requiring a network filesystem.
+* **USB:** `CONFIG_USB_UHCI_HCD` provides USB 1.1 UHCI controller support, covering older or simpler QEMU machine configurations where USB input devices are presented through an emulated UHCI controller.
+* **Entropy:** `CONFIG_HW_RANDOM` is enabled as the parent facility for `CONFIG_HW_RANDOM_VIRTIO`. In a VM without a physical hardware RNG, VirtIO can expose entropy supplied by the host; without an available RNG source, early userspace or services that require entropy may have to wait for the guest's own entropy pool to initialize.
+
+### Anticipated firmware caveat
+
+The VM configuration does not require physical GPU firmware such as `amdgpu` or `i915` firmware when using QEMU's standard virtual graphics devices. `CONFIG_DRM_VIRTIO_GPU` provides the guest-side driver for VirtIO-GPU, while `CONFIG_DRM_BOCHS` and `CONFIG_DRM_CIRRUS_QEMU` cover common emulated VGA fallbacks.
+
+No dedicated `/etc/dracut.conf.d/` firmware override is therefore expected for the default VM graphics configuration. Unlike physical Intel or AMD graphics, the guest normally does not need to include host GPU firmware in its initramfs.
+
+If the VM is configured with a different virtual GPU or GPU passthrough, however, its firmware requirements may change. In particular, **VFIO/GPU passthrough should be treated as a separate hardware profile**, rather than adding physical-GPU firmware to the generic VM configuration.
 
 ---
 
@@ -99,12 +125,12 @@ A complete kernel build is made by running:
 
 ```sh
 export LOCALVERSION=
-make vind_x86_64_intel_minimal_defconfig
+make <your-selected-defconfig>
 make -j$(nproc)
 make modules_install
 ```
 
-(Substitute `vind_x86_64_amd_minimal_defconfig` once available.) The first command generates the vendor-specific Vind configuration, the second builds the kernel, and the third installs kernel modules into the target filesystem (only relevant if `CONFIG_MODULES=y`; the minimal configurations are largely monolithic, so this step may be a no-op).
+The first command generates the vendor-specific Vind configuration, the second builds the kernel, and the third installs kernel modules into the target filesystem (only relevant if `CONFIG_MODULES=y`; the minimal configurations are largely monolithic, so this step may be a no-op).
 
 ## Installing the Kernel Image
 
@@ -119,6 +145,8 @@ Copy it to your `/boot` directory with a descriptive filename:
 ```sh
 cp arch/x86/boot/bzImage /boot/vmlinuz-7.2.0-vind-intel-minimal
 ```
+
+(Substitute `vind-amd-minimal` when building the AMD configuration.)
 
 ### Initramfs
 
