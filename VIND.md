@@ -16,6 +16,7 @@ Vind provides minimal x86_64 kernel configurations, split by CPU vendor. See the
 Hardware-specific driver configuration beyond what each vendor baseline enables is the user's responsibility. Before building the kernel for a physical machine, review the hardware and enable any additional required drivers in `make menuconfig`, `make nconfig`, or another kernel configuration interface. Pay particular attention to:
 
 - Storage controllers (e.g. `SATA_AHCI`, `BLK_DEV_NVME`).
+- Wi-Fi support and device drivers (e.g. WLAN, CFG80211, MAC80211, and chipset drivers).
 - Input (`SERIO_I8042` + `KEYBOARD_ATKBD` for internal laptop keyboards, `USB_SUPPORT` + `HID_SUPPORT` + `USB_HID` for USB peripherals).
 - Graphics driver matching the actual GPU.
 
