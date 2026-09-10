@@ -130,7 +130,7 @@ make -j$(nproc)
 make modules_install
 ```
 
-The first command generates the vendor-specific Vind configuration, the second builds the kernel, and the third installs kernel modules into the target filesystem (only relevant if `CONFIG_MODULES=y`; the minimal configurations are largely monolithic, so this step may be a no-op).
+The first command generates the vendor-specific Vind configuration; the second builds the kernel itself; the third installs kernel modules into the target filesystem. That last step only matters if `CONFIG_MODULES=y` — the minimal configurations are largely monolithic by design, so `modules_install` is often a no-op, and it's also what decides whether the Initramfs section below applies to your build at all.
 
 ## Installing the Kernel Image
 
@@ -146,28 +146,33 @@ Copy it to your `/boot` directory with a descriptive filename:
 cp arch/x86/boot/bzImage /boot/vmlinuz-7.2.0-vind-intel-minimal
 ```
 
-(Substitute `vind-intel-minimal` to the configuration you built.)
+(Swap `vind-intel-minimal` for whichever defconfig you actually built — `vind-amd-minimal` or `vind-vm-minimal`.)
 
-### Initramfs
+### Initramfs (optional)
 
-The Vind minimal configurations expect to boot through an initramfs (`CONFIG_BLK_DEV_INITRD=y`), which mounts the root filesystem temporarily to run `fsck` before handing off control via `switch_root`. Without an initramfs, root-partition checks in `fstab` (`passno` > 0) will fail with a "device busy" error, since the kernel mounts root directly and exclusively.
+An initramfs is **not required** to boot a Vind kernel. `CONFIG_BLK_DEV_INITRD=y` is enabled so the option is there, but the minimal configurations are built largely monolithic on purpose (see `modules_install` above), and a kernel with everything it needs to find and mount root already built in can hand off straight from GRUB with no initramfs stage at all.
 
-Generate the initramfs with `dracut`:
+Reach for one when something has to run in userspace *before* root can be mounted — most commonly:
+
+- Root-device support (a storage controller, `dm-crypt`, LVM, etc.) was built as a module (`=m`) rather than built in, so a driver needs loading before the kernel can even see the root device.
+- Early firmware needs to be staged for a driver that initializes before the real root is available (see the Intel/AMD `.zst` firmware caveats above).
+- Anything else that needs to happen ahead of `switch_root` — an encrypted or network-backed root, for instance.
+
+If none of that applies to your build, skip this section entirely and go straight to regenerating GRUB below. If it does, generate the initramfs with `dracut`:
 
 ```sh
 dracut --force /boot/initramfs-7.2.0-vind-intel-minimal.img 7.2.0-vind-intel-minimal
 ```
 
-(Same thing applies here. Substitute `vind-intel-minimal` to the configuration you built.)
+(Same substitution as above — match the image and version string to the kernel you just built.)
 
-
-Then regenerate the GRUB configuration so the new kernel/initramfs pair is picked up:
+Either way — with or without an initramfs — regenerate the GRUB configuration so it picks up the new kernel:
 
 ```sh
 grub-mkconfig -o /boot/grub/grub.cfg
 ```
 
-Confirm the resulting boot entry includes both a `linux` and an `initrd` line pointing to the new kernel and initramfs.
+If you built an initramfs, confirm the resulting boot entry has both a `linux` and an `initrd` line pointing at the new kernel and initramfs. If you skipped it, the entry should have only the `linux` line — no `initrd` line is expected or needed.
 
 See the vendor-specific sections above ([Intel](#intel), [AMD](#amd)) for known firmware/initramfs caveats before considering a boot issue a kernel bug.
 
@@ -179,21 +184,17 @@ Vind tracks the mainline Linux kernel from:
 https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git
 ```
 
-The `upstream` remote is used to follow changes from the mainline kernel.
-
-To update the upstream references:
+This is followed through an `upstream` remote, kept up to date with:
 
 ```sh
 git fetch upstream
 ```
 
-Vind-specific changes are maintained on the `vind` branch.
+Vind-specific changes live entirely on the `vind` branch, on top of whatever upstream commit that remote currently points to.
 
 ## Philosophy
 
-Vind aims to keep its kernel configuration and modifications minimal.
-
-Whenever possible, functionality is provided by the upstream Linux kernel rather than through unnecessary patches maintained by Vind.
+Vind aims to keep its kernel configuration and modifications minimal, leaning on what upstream Linux already provides rather than maintaining patches for functionality that already exists there.
 
 The goal is a kernel that is:
 
