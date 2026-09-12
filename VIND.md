@@ -190,6 +190,12 @@ If none of that applies to your build, skip this section entirely and go straigh
 dracut --force /boot/initramfs-7.2.0-vind-intel-minimal.img 7.2.0-vind-intel-minimal
 ```
 
+If you are using musl libc you should use `DRACUT_LDCONFIG=true`:
+
+```sh
+DRACUT_LDCONFIG=true dracut --force /boot/initramfs-7.2.0-vind-intel-minimal.img 7.2.0-vind-intel-minimal
+```
+
 (Same substitution as above — match the image and version string to the kernel you just built.)
 
 Either way — with or without an initramfs — regenerate the GRUB configuration so it picks up the new kernel:
