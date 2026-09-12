@@ -4,14 +4,18 @@ This repository contains the Linux kernel used by **Vind Linux**.
 
 Vind maintains a small set of kernel-specific changes on top of the upstream Linux kernel, keeping the upstream source as the base whenever possible.
 
+For build failures, boot issues, or anything that looks like a kernel bug, check **[VIND-TROUBLESHOOTING.md](VIND-TROUBLESHOOTING.md)** before assuming it's new — most gotchas hit here have already been diagnosed there.
+
 ## Version
 
 - **Linux:** 7.2.0
 - **Architecture:** x86_64
 
+This number can drift out of sync with the actual checked-out source if this document isn't updated on every version bump. Before naming a built image or an initramfs, confirm the real version with `make kernelversion` inside the kernel tree rather than trusting this section — `modules_install` output (`/lib/modules/<version>/`) is also authoritative and worth cross-checking against.
+
 ## Configuration
 
-Vind provides minimal x86_64 kernel configurations, split by CPU vendor, plus a hardware-agnostic Generic profile for distro-wide builds. See the [Intel](#intel), [AMD](#amd), [VM](#vm), and [Generic](#generic) sections below for details specific to each.
+Vind provides minimal x86_64 kernel configurations, split by CPU vendor, plus a hardware-agnostic Generic profile for distro-wide builds. See [Intel](#intel), [AMD](#amd), [VM](#vm), and [Generic](#generic) below for details specific to each.
 
 Hardware-specific driver configuration beyond what each vendor baseline enables is the user's responsibility. Before building the kernel for a physical machine, review the hardware and enable any additional required drivers in `make menuconfig`, `make nconfig`, or another kernel configuration interface. Pay particular attention to:
 
@@ -21,6 +25,8 @@ Hardware-specific driver configuration beyond what each vendor baseline enables 
 - Graphics driver matching the actual GPU.
 
 The minimal configurations should be treated as a baseline rather than a universal hardware configuration.
+
+All four profiles below are monolithic by design: `CONFIG_MODULES` is unset and every driver they enable is builtin (`=y`). No profile currently produces a `.ko`, and `modules_install` is a no-op for all of them (see [VIND-TROUBLESHOOTING.md](VIND-TROUBLESHOOTING.md) for why this matters more than it sounds like it should).
 
 ---
 
@@ -42,27 +48,7 @@ The Intel minimal configuration targets modern Intel platforms (Alder Lake and n
 - CPU: microcode loading (`CONFIG_MICROCODE=y`) and Intel-specific CPU support (`CONFIG_CPU_SUP_INTEL`) are covered by kernel defaults and don't need explicit tuning.
 - Crypto: `CONFIG_CRYPTO_AES_NI_INTEL` for hardware-accelerated AES.
 
-### Known issue: `.zst`-compressed firmware missing from initramfs
-
-The Intel configuration enables the kernel's built-in compressed firmware support (`CONFIG_FW_LOADER_COMPRESS=y`, `CONFIG_FW_LOADER_COMPRESS_ZSTD=y`). This lets drivers request a plain firmware name (e.g. `i915/adlp_guc_70.bin`) and have the kernel transparently fall back to a `.zst`-compressed variant and decompress it in-kernel — this is how `linux-firmware` ships firmware today, and no manual decompression should ever be required on a correctly built system.
-
-If a driver fails to load its firmware at boot (commonly surfaced as GPU/DRM init failures, e.g. `i915` reporting a wedged GPU and no `/dev/dri/renderD128`), this is almost always because **the required `.zst` firmware file was never copied into the initramfs**, not because the kernel can't read it. This is a documented upstream `dracut` bug/limitation: firmware install detection has historically not accounted for the `.zst` suffix, silently omitting the file from the generated image. A fix landed upstream ("Fix firmware loading paths, support .zst-suffixed firmware"), but wildcard-named firmware entries can still be affected depending on the `dracut` version in use.
-
-Do **not** work around this by manually decompressing firmware files under `/lib/firmware` and forcing a rebuild — this only fixes the symptom on one machine, is undone by the next `linux-firmware` update, and discards the disk-space benefit the compressed format exists for.
-
-Instead:
-
-1. Confirm the firmware exists on disk: `ls /usr/lib/firmware/i915/ | grep adlp_guc`.
-2. Check whether it's actually in the current initramfs: `lsinitrd /boot/initramfs-<version>.img | grep i915`.
-3. If missing, force it in via `/etc/dracut.conf.d/i915-firmware.conf`:
-
-   ```
-   install_items+=" /usr/lib/firmware/i915/* "
-   ```
-
-4. Regenerate the initramfs (`dracut --force ...`) and re-check with `lsinitrd`.
-
-This keeps firmware shipped compressed (as intended) and survives future `linux-firmware` updates without per-machine intervention. Since this affects any Intel platform using GuC/DMC firmware (most Gen9+ integrated graphics), this `dracut.conf.d` override should be treated as a standard part of an Intel Vind install, not a one-off fix.
+Known firmware caveat for this profile: [`.zst`-compressed firmware missing from initramfs](VIND-TROUBLESHOOTING.md#zst-compressed-firmware-missing-from-initramfs-intelamd).
 
 ---
 
@@ -84,9 +70,7 @@ The AMD minimal configuration mirrors the Intel baseline where the hardware over
 - CPU: microcode loading (`CONFIG_MICROCODE=y`) is vendor-agnostic and covered by kernel defaults, same as Intel.
 - Crypto: `CONFIG_CRYPTO_AES_NI_INTEL` is kept despite the name — AES-NI is an x86 instruction set extension present on both Intel and AMD CPUs, and the driver works on either.
 
-### Anticipated firmware caveat
-
-`amdgpu` also ships large firmware blobs under `/usr/lib/firmware/amdgpu/`, commonly `.zst`-compressed by `linux-firmware` for the same disk-space reasons as Intel's `i915` firmware. The same `dracut` `.zst` detection issue documented in the [Intel](#intel) section is expected to apply here too, since it's a `dracut`/initramfs-generation issue rather than anything driver-specific. Until confirmed against real AMD graphics hardware, treat this pre-emptively: add a matching `/etc/dracut.conf.d/amdgpu-firmware.conf` override (`install_items+=" /usr/lib/firmware/amdgpu/* "`) rather than waiting to hit the same wedged-GPU symptom the Intel section describes.
+Known caveats for this profile: [`.zst`-compressed firmware](VIND-TROUBLESHOOTING.md#zst-compressed-firmware-missing-from-initramfs-intelamd), [`CONFIG_WERROR` vs amdgpu DC/DML](VIND-TROUBLESHOOTING.md#config_werror-vs-amdgpu-dcdml-stack-frame-size).
 
 ---
 
@@ -109,13 +93,7 @@ The VM minimal configuration is designed around QEMU/KVM-style guests, prioritiz
 * **USB:** `CONFIG_USB_UHCI_HCD` provides USB 1.1 UHCI controller support, covering older or simpler QEMU machine configurations where USB input devices are presented through an emulated UHCI controller.
 * **Entropy:** `CONFIG_HW_RANDOM` is enabled as the parent facility for `CONFIG_HW_RANDOM_VIRTIO`. In a VM without a physical hardware RNG, VirtIO can expose entropy supplied by the host; without an available RNG source, early userspace or services that require entropy may have to wait for the guest's own entropy pool to initialize.
 
-### Anticipated firmware caveat
-
-The VM configuration does not require physical GPU firmware such as `amdgpu` or `i915` firmware when using QEMU's standard virtual graphics devices. `CONFIG_DRM_VIRTIO_GPU` provides the guest-side driver for VirtIO-GPU, while `CONFIG_DRM_BOCHS` and `CONFIG_DRM_CIRRUS_QEMU` cover common emulated VGA fallbacks.
-
-No dedicated `/etc/dracut.conf.d/` firmware override is therefore expected for the default VM graphics configuration. Unlike physical Intel or AMD graphics, the guest normally does not need to include host GPU firmware in its initramfs.
-
-If the VM is configured with a different virtual GPU or GPU passthrough, however, its firmware requirements may change. In particular, **VFIO/GPU passthrough should be treated as a separate hardware profile**, rather than adding physical-GPU firmware to the generic VM configuration.
+The VM profile does not require physical GPU firmware — `DRM_VIRTIO_GPU`/`DRM_BOCHS`/`DRM_CIRRUS_QEMU` need none of it. If the VM uses GPU passthrough instead of these, treat that as a separate hardware profile rather than extending this one.
 
 ---
 
@@ -127,21 +105,15 @@ If the VM is configured with a different virtual GPU or GPU passthrough, however
 
 ### Coverage
 
-The Generic configuration is a union of the Intel, AMD, and VM baselines, intended for distro-wide images that must boot on any of the three targets without a rebuild. It intentionally departs from the "monolithic by design" approach used elsewhere (see [Philosophy](#philosophy)):
+A union of the Intel, AMD, and VM baselines, for distro-wide images that must boot on any of the three targets without a rebuild. Same monolithic approach as the other three profiles — everything below is builtin (`=y`):
 
-- **Boot-critical infrastructure stays builtin:** `DEVTMPFS`, early console (`SERIAL_8250`, `VIRTIO_CONSOLE`), early graphics fallback (`DRM_EFIDRM`/`DRM_SIMPLEDRM`/`FB`), IOMMU (`AMD_IOMMU` + `INTEL_IOMMU`, both bool — can't be modules), and root-capable filesystems (`EXT4_FS`, `VFAT_FS`, `ISO9660_FS`, `TMPFS`).
-- **Hardware-specific device drivers are modules (`=m`):** both GPU drivers (`DRM_AMDGPU`, `DRM_I915`, plus the VM ones `DRM_VIRTIO_GPU`/`DRM_BOCHS`/`DRM_CIRRUS_QEMU`), both NIC sets (`E1000E`/`IGC`/`R8169` and `VIRTIO_NET`/`E1000`), `IWLWIFI`, both storage controller families (`SATA_AHCI`, `ATA_PIIX`, `BLK_DEV_NVME`, `VIRTIO_BLK`), both platform I2C/sensor chips (`I2C_I801`, `I2C_PIIX4`, `SENSORS_K10TEMP`), sound (`SND_HDA_INTEL`), and USB host controllers (`USB_XHCI_HCD`, `USB_UHCI_HCD`).
-- **CPU vendor support is unconditional:** unlike the vendor-specific profiles, nothing here disables `CPU_SUP_INTEL` or equivalent AMD paths — both `CONFIG_X86_INTEL_PSTATE` and `CONFIG_X86_AMD_PSTATE` are built in side by side (each CPU only loads its own driver at runtime), with `schedutil` as the default governor, matching the Intel/AMD sections above.
-- **Virtualization:** guest-side paravirtualization (`HYPERVISOR_GUEST`, `PARAVIRT`, `PARAVIRT_SPINLOCKS`, `KVM_GUEST`, `PVH`) is enabled unconditionally, same as the VM profile — it's a no-op on bare metal. In addition, Generic enables **KVM host** support (`CONFIG_KVM`, `CONFIG_KVM_INTEL`, `CONFIG_KVM_AMD`, `CONFIG_VHOST_NET`, `CONFIG_TUN`, `CONFIG_BRIDGE`, all `=m`), which none of the vendor-specific profiles provide — Generic is the profile to use for a machine that also needs to host VMs.
-- **VirtIO:** the full stack from the VM profile (`VIRTIO_MENU`, `VIRTIO_PCI`, `VIRTIO_BALLOON`, `VIRTIO_INPUT`, `VIRTIO_MMIO`, `HW_RANDOM` + `HW_RANDOM_VIRTIO`, `NET_9P`/`NET_9P_VIRTIO`/`9P_FS`) is included as modules, so a Generic-kernel image also works as a VM guest without a separate build.
+- **All hardware from all three targets:** both GPU drivers (`DRM_AMDGPU`, `DRM_I915`, plus the VM ones `DRM_VIRTIO_GPU`/`DRM_BOCHS`/`DRM_CIRRUS_QEMU`), both NIC sets (`E1000E`/`IGC`/`R8169` and `VIRTIO_NET`/`E1000`), `IWLWIFI`, both storage controller families (`SATA_AHCI`, `ATA_PIIX`, `BLK_DEV_NVME`, `VIRTIO_BLK`), both platform I2C/sensor chips (`I2C_I801`, `I2C_PIIX4`, `SENSORS_K10TEMP`), sound (`SND_HDA_INTEL`), and USB host controllers (`USB_XHCI_HCD`, `USB_UHCI_HCD`).
+- **CPU vendor support is unconditional:** unlike the vendor-specific profiles, nothing here disables `CPU_SUP_INTEL` or equivalent AMD paths — both `CONFIG_X86_INTEL_PSTATE` and `CONFIG_X86_AMD_PSTATE` are built in side by side (each CPU only loads its own driver at runtime), with `schedutil` as the default governor.
+- **Virtualization:** guest-side paravirtualization (`HYPERVISOR_GUEST`, `PARAVIRT`, `PARAVIRT_SPINLOCKS`, `KVM_GUEST`, `PVH`) is enabled unconditionally, same as the VM profile — it's a no-op on bare metal. Generic additionally enables **KVM host** support (`CONFIG_KVM`, `CONFIG_KVM_INTEL`, `CONFIG_KVM_AMD`, `CONFIG_VHOST_NET`, `CONFIG_TUN`, `CONFIG_BRIDGE`), which none of the vendor-specific profiles provide.
+- **VirtIO:** the full stack from the VM profile (`VIRTIO_MENU`, `VIRTIO_PCI`, `VIRTIO_BALLOON`, `VIRTIO_INPUT`, `VIRTIO_MMIO`, `HW_RANDOM` + `HW_RANDOM_VIRTIO`, `NET_9P`/`NET_9P_VIRTIO`/`9P_FS`) is included, so a Generic image also works as a VM guest without a separate build.
+- `CONFIG_WERROR` is unset here for the same reason as AMD — see [`CONFIG_WERROR` vs amdgpu DC/DML](VIND-TROUBLESHOOTING.md#config_werror-vs-amdgpu-dcdml-stack-frame-size).
 
-### Initramfs is mandatory, not optional
-
-This is the one point where Generic's story diverges sharply from the rest of this document. The [Initramfs](#initramfs-optional) section below describes initramfs as optional for the vendor-specific profiles because those are built largely monolithic — the driver needed to find and mount root is already built in.
-
-Generic is the opposite: essentially every storage and network controller (`SATA_AHCI`, `ATA_PIIX`, `BLK_DEV_NVME`, `VIRTIO_BLK`, and all the NIC drivers) is `=m` by design, since it has to cover Intel, AMD, and VM hardware from a single image. **A Generic build without an initramfs will not find its root device.** Always generate one with `dracut` as part of a Generic install, and confirm the resulting GRUB entry has both a `linux` and an `initrd` line, same as described below.
-
-The [Intel](#intel) and [AMD](#amd) `.zst` firmware caveats apply here too, for the same reason (`amdgpu`/`i915` are modules that request compressed firmware) — add both `/etc/dracut.conf.d/i915-firmware.conf` and `/etc/dracut.conf.d/amdgpu-firmware.conf` overrides on a Generic install, since either GPU driver may end up in use depending on the target machine.
+Known caveats for this profile: [`.zst`-compressed firmware](VIND-TROUBLESHOOTING.md#zst-compressed-firmware-missing-from-initramfs-intelamd), [`CONFIG_WERROR` vs amdgpu DC/DML](VIND-TROUBLESHOOTING.md#config_werror-vs-amdgpu-dcdml-stack-frame-size), and — specific to this profile — [GPU firmware on a monolithic build](VIND-TROUBLESHOOTING.md#gpu-firmware-on-a-monolithic-build-generic), a decision you need to make explicitly before shipping an image.
 
 ---
 
@@ -156,7 +128,7 @@ make -j$(nproc)
 make modules_install
 ```
 
-The first command generates the vendor-specific Vind configuration; the second builds the kernel itself; the third installs kernel modules into the target filesystem. That last step only matters if `CONFIG_MODULES=y` — the minimal configurations are largely monolithic by design, so `modules_install` is often a no-op, and it's also what decides whether the Initramfs section below applies to your build at all. The [Generic](#generic) profile is the exception: it enables `CONFIG_MODULES=y` and builds most hardware drivers as modules on purpose, so `modules_install` is not a no-op there, and an initramfs is required rather than optional — see [Initramfs is mandatory, not optional](#initramfs-is-mandatory-not-optional).
+The first command generates the vendor-specific Vind configuration; the second builds the kernel itself; the third installs kernel modules into the target filesystem. Since every profile is monolithic (`CONFIG_MODULES` unset), this step is a no-op today for all four — see [VIND-TROUBLESHOOTING.md](VIND-TROUBLESHOOTING.md#config_modules-silently-unset-m-gets-promoted-to-y) if you're trying to reintroduce modules and it isn't behaving as expected.
 
 ## Installing the Kernel Image
 
@@ -169,34 +141,34 @@ arch/x86/boot/bzImage
 Copy it to your `/boot` directory with a descriptive filename:
 
 ```sh
-cp arch/x86/boot/bzImage /boot/vmlinuz-7.2.0-vind-intel-minimal
+cp arch/x86/boot/bzImage /boot/vmlinuz-7.2.5-vind-intel-minimal
 ```
 
-(Swap `vind-intel-minimal` for whichever defconfig you actually built — `vind-amd-minimal`, `vind-vm-minimal`, or `vind-generic-minimal`.)
+(Swap `vind-intel-minimal` for whichever defconfig you actually built — `vind-amd-minimal`, `vind-vm-minimal`, or `vind-generic-minimal`. Confirm the version number matches `make kernelversion` output, not just what this doc says — see [VIND-TROUBLESHOOTING.md](VIND-TROUBLESHOOTING.md#version-string-mismatch-between-vindmd-and-the-actual-source-tree).)
 
 ### Initramfs (optional)
 
-An initramfs is **not required** to boot a Vind kernel. `CONFIG_BLK_DEV_INITRD=y` is enabled so the option is there, but the minimal configurations are built largely monolithic on purpose (see `modules_install` above), and a kernel with everything it needs to find and mount root already built in can hand off straight from GRUB with no initramfs stage at all.
+An initramfs is **not required** to boot a Vind kernel on any of the four profiles. `CONFIG_BLK_DEV_INITRD=y` is enabled so the option is there, but every profile is monolithic on purpose, and a kernel with everything it needs to find and mount root already built in can hand off straight from GRUB with no initramfs stage at all.
 
 Reach for one when something has to run in userspace *before* root can be mounted — most commonly:
 
-- Root-device support (a storage controller, `dm-crypt`, LVM, etc.) was built as a module (`=m`) rather than built in, so a driver needs loading before the kernel can even see the root device.
-- Early firmware needs to be staged for a driver that initializes before the real root is available (see the Intel/AMD `.zst` firmware caveats above).
-- Anything else that needs to happen ahead of `switch_root` — an encrypted or network-backed root, for instance.
+- An encrypted or network-backed root (`dm-crypt`, LVM, NFS root, etc.).
+- GPU firmware staging on the [Generic](#generic) profile — see [VIND-TROUBLESHOOTING.md](VIND-TROUBLESHOOTING.md#gpu-firmware-on-a-monolithic-build-generic).
+- Anything else that needs to happen ahead of `switch_root`.
 
 If none of that applies to your build, skip this section entirely and go straight to regenerating GRUB below. If it does, generate the initramfs with `dracut`:
 
 ```sh
-dracut --force /boot/initramfs-7.2.0-vind-intel-minimal.img 7.2.0-vind-intel-minimal
+dracut --force /boot/initramfs-7.2.5-vind-intel-minimal.img 7.2.5-vind-intel-minimal
 ```
 
-If you are using musl libc you should use `DRACUT_LDCONFIG=true`:
+And if you are using musl libc generate the initramfs with DRACUT_LDCONFIG=true:
 
 ```sh
-DRACUT_LDCONFIG=true dracut --force /boot/initramfs-7.2.0-vind-intel-minimal.img 7.2.0-vind-intel-minimal
+DRACUT_LDCONFIG=true dracut --force /boot/initramfs-intel.img 7.2.5-vind-intel-minimal
 ```
 
-(Same substitution as above — match the image and version string to the kernel you just built.)
+(Same substitution as above — match the image and version string to the kernel you just built, and to what `/lib/modules/` actually contains after `modules_install`.)
 
 Either way — with or without an initramfs — regenerate the GRUB configuration so it picks up the new kernel:
 
@@ -205,8 +177,6 @@ grub-mkconfig -o /boot/grub/grub.cfg
 ```
 
 If you built an initramfs, confirm the resulting boot entry has both a `linux` and an `initrd` line pointing at the new kernel and initramfs. If you skipped it, the entry should have only the `linux` line — no `initrd` line is expected or needed.
-
-See the vendor-specific sections above ([Intel](#intel), [AMD](#amd)) for known firmware/initramfs caveats before considering a boot issue a kernel bug.
 
 ## Upstream
 
