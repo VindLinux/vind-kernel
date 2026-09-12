@@ -11,7 +11,7 @@ Vind maintains a small set of kernel-specific changes on top of the upstream Lin
 
 ## Configuration
 
-Vind provides minimal x86_64 kernel configurations, split by CPU vendor. See the [Intel](#intel) and [AMD](#amd) sections below for details specific to each.
+Vind provides minimal x86_64 kernel configurations, split by CPU vendor, plus a hardware-agnostic Generic profile for distro-wide builds. See the [Intel](#intel), [AMD](#amd), [VM](#vm), and [Generic](#generic) sections below for details specific to each.
 
 Hardware-specific driver configuration beyond what each vendor baseline enables is the user's responsibility. Before building the kernel for a physical machine, review the hardware and enable any additional required drivers in `make menuconfig`, `make nconfig`, or another kernel configuration interface. Pay particular attention to:
 
@@ -119,6 +119,32 @@ If the VM is configured with a different virtual GPU or GPU passthrough, however
 
 ---
 
+## Generic
+
+- **Status:** available
+- **Config file:** `arch/x86/configs/vind_x86_64_generic_minimal_defconfig`
+- **Generate with:** `make vind_x86_64_generic_minimal_defconfig`
+
+### Coverage
+
+The Generic configuration is a union of the Intel, AMD, and VM baselines, intended for distro-wide images that must boot on any of the three targets without a rebuild. It intentionally departs from the "monolithic by design" approach used elsewhere (see [Philosophy](#philosophy)):
+
+- **Boot-critical infrastructure stays builtin:** `DEVTMPFS`, early console (`SERIAL_8250`, `VIRTIO_CONSOLE`), early graphics fallback (`DRM_EFIDRM`/`DRM_SIMPLEDRM`/`FB`), IOMMU (`AMD_IOMMU` + `INTEL_IOMMU`, both bool — can't be modules), and root-capable filesystems (`EXT4_FS`, `VFAT_FS`, `ISO9660_FS`, `TMPFS`).
+- **Hardware-specific device drivers are modules (`=m`):** both GPU drivers (`DRM_AMDGPU`, `DRM_I915`, plus the VM ones `DRM_VIRTIO_GPU`/`DRM_BOCHS`/`DRM_CIRRUS_QEMU`), both NIC sets (`E1000E`/`IGC`/`R8169` and `VIRTIO_NET`/`E1000`), `IWLWIFI`, both storage controller families (`SATA_AHCI`, `ATA_PIIX`, `BLK_DEV_NVME`, `VIRTIO_BLK`), both platform I2C/sensor chips (`I2C_I801`, `I2C_PIIX4`, `SENSORS_K10TEMP`), sound (`SND_HDA_INTEL`), and USB host controllers (`USB_XHCI_HCD`, `USB_UHCI_HCD`).
+- **CPU vendor support is unconditional:** unlike the vendor-specific profiles, nothing here disables `CPU_SUP_INTEL` or equivalent AMD paths — both `CONFIG_X86_INTEL_PSTATE` and `CONFIG_X86_AMD_PSTATE` are built in side by side (each CPU only loads its own driver at runtime), with `schedutil` as the default governor, matching the Intel/AMD sections above.
+- **Virtualization:** guest-side paravirtualization (`HYPERVISOR_GUEST`, `PARAVIRT`, `PARAVIRT_SPINLOCKS`, `KVM_GUEST`, `PVH`) is enabled unconditionally, same as the VM profile — it's a no-op on bare metal. In addition, Generic enables **KVM host** support (`CONFIG_KVM`, `CONFIG_KVM_INTEL`, `CONFIG_KVM_AMD`, `CONFIG_VHOST_NET`, `CONFIG_TUN`, `CONFIG_BRIDGE`, all `=m`), which none of the vendor-specific profiles provide — Generic is the profile to use for a machine that also needs to host VMs.
+- **VirtIO:** the full stack from the VM profile (`VIRTIO_MENU`, `VIRTIO_PCI`, `VIRTIO_BALLOON`, `VIRTIO_INPUT`, `VIRTIO_MMIO`, `HW_RANDOM` + `HW_RANDOM_VIRTIO`, `NET_9P`/`NET_9P_VIRTIO`/`9P_FS`) is included as modules, so a Generic-kernel image also works as a VM guest without a separate build.
+
+### Initramfs is mandatory, not optional
+
+This is the one point where Generic's story diverges sharply from the rest of this document. The [Initramfs](#initramfs-optional) section below describes initramfs as optional for the vendor-specific profiles because those are built largely monolithic — the driver needed to find and mount root is already built in.
+
+Generic is the opposite: essentially every storage and network controller (`SATA_AHCI`, `ATA_PIIX`, `BLK_DEV_NVME`, `VIRTIO_BLK`, and all the NIC drivers) is `=m` by design, since it has to cover Intel, AMD, and VM hardware from a single image. **A Generic build without an initramfs will not find its root device.** Always generate one with `dracut` as part of a Generic install, and confirm the resulting GRUB entry has both a `linux` and an `initrd` line, same as described below.
+
+The [Intel](#intel) and [AMD](#amd) `.zst` firmware caveats apply here too, for the same reason (`amdgpu`/`i915` are modules that request compressed firmware) — add both `/etc/dracut.conf.d/i915-firmware.conf` and `/etc/dracut.conf.d/amdgpu-firmware.conf` overrides on a Generic install, since either GPU driver may end up in use depending on the target machine.
+
+---
+
 ## Building
 
 A complete kernel build is made by running:
@@ -130,7 +156,7 @@ make -j$(nproc)
 make modules_install
 ```
 
-The first command generates the vendor-specific Vind configuration; the second builds the kernel itself; the third installs kernel modules into the target filesystem. That last step only matters if `CONFIG_MODULES=y` — the minimal configurations are largely monolithic by design, so `modules_install` is often a no-op, and it's also what decides whether the Initramfs section below applies to your build at all.
+The first command generates the vendor-specific Vind configuration; the second builds the kernel itself; the third installs kernel modules into the target filesystem. That last step only matters if `CONFIG_MODULES=y` — the minimal configurations are largely monolithic by design, so `modules_install` is often a no-op, and it's also what decides whether the Initramfs section below applies to your build at all. The [Generic](#generic) profile is the exception: it enables `CONFIG_MODULES=y` and builds most hardware drivers as modules on purpose, so `modules_install` is not a no-op there, and an initramfs is required rather than optional — see [Initramfs is mandatory, not optional](#initramfs-is-mandatory-not-optional).
 
 ## Installing the Kernel Image
 
@@ -146,7 +172,7 @@ Copy it to your `/boot` directory with a descriptive filename:
 cp arch/x86/boot/bzImage /boot/vmlinuz-7.2.0-vind-intel-minimal
 ```
 
-(Swap `vind-intel-minimal` for whichever defconfig you actually built — `vind-amd-minimal` or `vind-vm-minimal`.)
+(Swap `vind-intel-minimal` for whichever defconfig you actually built — `vind-amd-minimal`, `vind-vm-minimal`, or `vind-generic-minimal`.)
 
 ### Initramfs (optional)
 
