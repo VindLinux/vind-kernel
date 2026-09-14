@@ -87,6 +87,12 @@ CONFIG_VMD=y
 CONFIG_DEVTMPFS=y
 CONFIG_DEVTMPFS_MOUNT=y
 CONFIG_BLK_DEV_INITRD=y
+# --- Adicionado: descompressores do initramfs ---
+# Garante que o kernel consiga descomprimir o initrd/initramfs
+# independente do formato que sua ferramenta de build usar.
+CONFIG_RD_GZIP=y
+CONFIG_RD_XZ=y
+CONFIG_RD_ZSTD=y
 # CONFIG_STANDALONE is not set
 # CONFIG_PREVENT_FIRMWARE_BUILD is not set
 CONFIG_FW_LOADER_COMPRESS=y
@@ -101,6 +107,12 @@ CONFIG_SCSI_DH=y
 CONFIG_ATA=y
 CONFIG_SATA_AHCI=y
 CONFIG_ATA_PIIX=y
+# --- Adicionado: leitura de CD/DVD (ATAPI/SCSI) e virtio-scsi ---
+# Sem BLK_DEV_SR nao existe /dev/sr0: drive optico real ou
+# ide-cd/virtio-scsi-cd de QEMU/VirtualBox nao aparece no sistema.
+CONFIG_SCSI=y
+CONFIG_BLK_DEV_SR=y
+CONFIG_SCSI_VIRTIO=y
 CONFIG_NETDEVICES=y
 CONFIG_VIRTIO_NET=y
 CONFIG_E1000=y
@@ -158,11 +170,23 @@ CONFIG_EXT4_FS=y
 CONFIG_EXT4_FS_SECURITY=y
 # CONFIG_DNOTIFY is not set
 CONFIG_ISO9660_FS=y
+# --- Adicionado: extensoes de ISO9660 p/ imagens hibridas (xorriso/genisoimage) ---
+CONFIG_JOLIET=y
+CONFIG_ZISOFS=y
+CONFIG_UDF_FS=y
 CONFIG_VFAT_FS=y
 CONFIG_EXFAT_FS=y
 CONFIG_TMPFS=y
 CONFIG_TMPFS_POSIX_ACL=y
-# CONFIG_MISC_FILESYSTEMS is not set
+# --- Adicionado: essencial para live ISO (rootfs comprimido + camada gravavel) ---
+CONFIG_SQUASHFS=y
+CONFIG_SQUASHFS_XZ=y
+CONFIG_SQUASHFS_ZSTD=y
+CONFIG_SQUASHFS_LZ4=y
+CONFIG_OVERLAY_FS=y
+# NOTA: MISC_FILESYSTEMS precisa ficar ligado (default do kernel e' y),
+# pois SQUASHFS mora dentro desse submenu. A linha "is not set" original
+# foi removida, senao o squashfs e' descartado silenciosamente.
 CONFIG_9P_FS=y
 CONFIG_NLS_CODEPAGE_437=y
 CONFIG_NLS_ISO8859_1=y
